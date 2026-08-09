@@ -1,0 +1,36 @@
+name: Inscripción de equipo
+description: Registra tu equipo de 2 integrantes para el curso.
+title: "[registro] "
+labels: ["registration"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Quien completa este formulario **inscribe al equipo completo**,
+        no se está uniendo a uno existente. Si tu equipo es de una sola
+        persona, deja el campo de compañero vacío — es válido y el
+        equipo quedará así. Un administrador debe aprobar la solicitud
+        antes de que se los agregue a la organización.
+  - type: input
+    id: github_username
+    attributes:
+      label: Tu usuario de GitHub
+      description: Debe coincidir con la cuenta desde la que abres este issue.
+      placeholder: octocat
+    validations:
+      required: true
+  - type: input
+    id: teammate_username
+    attributes:
+      label: Usuario de tu compañero de equipo (opcional)
+      placeholder: octocat
+    validations:
+      required: false
+  - type: input
+    id: team_name
+    attributes:
+      label: Nombre del equipo
+      description: Debe ser único. Al registrarlo, el equipo queda completo con quienes indiques aquí.
+      placeholder: equipo-alpha
+    validations:
+      required: true

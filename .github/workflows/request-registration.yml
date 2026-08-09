@@ -1,0 +1,105 @@
+name: Request registration
+
+# This repo is PUBLIC (so students can file issues without org access).
+# It never writes to the roster or touches org membership directly —
+# it only proposes a change as a pull request against the private
+# classroom-roster repo. An admin reviewing/merging that PR is what
+# actually grants anything (see classroom-roster's
+# on-registration-approved.yml).
+
+on:
+  issues:
+    types: [opened, edited, reopened]
+
+env:
+  ORG: ${{ github.repository_owner }}
+  ROSTER_REPO: OWNER_ORG/classroom-roster   # <-- set this to your org/repo
+
+jobs:
+  request:
+    if: contains(github.event.issue.labels.*.name, 'registration')
+    runs-on: ubuntu-latest
+    steps:
+      # Local issue comments/closes use the default token (least
+      # privilege) — this job only reaches for ORG_ADMIN_TOKEN for the
+      # steps that actually need private-repo / cross-repo access.
+      - name: Checkout private roster repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ROSTER_REPO }}
+          token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          path: roster-checkout
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: pip install pyyaml
+
+      - name: Validate request against roster (dry run against a scratch copy)
+        id: reg
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
+          ROSTER_PATH: roster-checkout/roster.yaml
+        run: python3 roster-checkout/scripts/register.py
+
+      - name: Reject (syntactically invalid or breaks a rule)
+        if: steps.reg.outputs.status == 'error'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --body "❌ ${{ steps.reg.outputs.message }}"
+          gh issue close "${{ github.event.issue.number }}" --reason "not planned"
+          gh issue edit "${{ github.event.issue.number }}" --add-label "rejected"
+
+      - name: Open approval PR against classroom-roster
+        if: steps.reg.outputs.status == 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+        run: |
+          cd roster-checkout
+          BRANCH="register/issue-${{ github.event.issue.number }}-${{ steps.reg.outputs.username }}"
+          git config user.name "classroom-bot"
+          git config user.email "classroom-bot@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add roster.yaml
+          git commit -m "Register ${{ steps.reg.outputs.username }} -> ${{ steps.reg.outputs.team_name }}"
+          git push -f origin "$BRANCH"
+
+          # Structured metadata block the roster-side workflow parses
+          # back out once this PR is merged/closed.
+          BODY=$(cat <<EOF
+          Solicitud de inscripción de @${{ steps.reg.outputs.username }}
+          para el equipo **${{ steps.reg.outputs.team_name }}**.
+
+          ${{ steps.reg.outputs.message }}
+
+          <!-- registration-meta
+          username: ${{ steps.reg.outputs.username }}
+          teammate: "${{ steps.reg.outputs.teammate }}"
+          team_name: "${{ steps.reg.outputs.team_name }}"
+          team_slug: ${{ steps.reg.outputs.team_slug }}
+          issue_repo: ${{ github.repository }}
+          issue_number: ${{ github.event.issue.number }}
+          -->
+          EOF
+          )
+
+          EXISTING=$(gh pr list --repo "${ROSTER_REPO}" --head "$BRANCH" --json number --jq 'length')
+          if [ "$EXISTING" -gt 0 ]; then
+            echo "PR for $BRANCH already open, updated its branch content above."
+          else
+            gh pr create --repo "${ROSTER_REPO}" \
+              --base main \
+              --head "$BRANCH" \
+              --title "Registro: ${{ steps.reg.outputs.team_name }} (${{ steps.reg.outputs.username }})" \
+              --body "$BODY"
+          fi
+
+      - name: Tell the student it's pending approval
+        if: steps.reg.outputs.status == 'ok'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment "${{ github.event.issue.number }}" --body "✅ Solicitud válida — ${{ steps.reg.outputs.message }} Un administrador debe aprobarla antes de que se los agregue a la organización; este issue se actualizará automáticamente cuando eso ocurra."

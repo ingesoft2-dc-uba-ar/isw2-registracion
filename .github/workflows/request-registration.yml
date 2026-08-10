@@ -5,7 +5,25 @@ name: Request registration
 # it only proposes a change as a pull request against the private
 # isw2-listado-alumnos repo. An admin reviewing/merging that PR is
 # what actually grants anything (see isw2-listado-alumnos's
-# on-registration-approved.yml).
+# on-registration-approved.yml). It never comments/closes on its own
+# success — the admin closes the issue manually once approved.
+#
+# Two things every step below is careful about:
+#  1. This workflow never checks out its own repo (only the roster
+#     repo, into roster-checkout/), so every `gh issue`/`gh pr` call
+#     needs an explicit --repo — there's no local git checkout for gh
+#     to auto-detect the repo from.
+#  2. Free-text values (team_name is student-typed and unconstrained;
+#     the validation message can contain markdown backticks) are
+#     passed through env: and referenced as "$VAR" in run: scripts,
+#     never interpolated directly via ${{ }} into the script text.
+#     ${{ }} interpolation happens before bash parses the script, so
+#     literal backticks or $() in the value would be re-parsed as
+#     shell syntax; env-var expansion of "$VAR" does not re-parse its
+#     contents, so this is the safe way to use untrusted text here.
+#     (username is exempt from this — it's cross-checked against the
+#     issue author's real GitHub login, which GitHub itself already
+#     restricts to alphanumerics and hyphens.)
 
 on:
   issues:
@@ -49,40 +67,48 @@ jobs:
         if: steps.reg.outputs.status == 'error'
         env:
           GH_TOKEN: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
+          MESSAGE: ${{ steps.reg.outputs.message }}
         run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "❌ ${{ steps.reg.outputs.message }}"
-          gh issue close "${{ github.event.issue.number }}" --reason "not planned"
-          gh issue edit "${{ github.event.issue.number }}" --add-label "rejected"
+          gh issue comment "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --body "❌ ${MESSAGE}"
+          gh issue close "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --reason "not planned"
+          gh issue edit "${{ github.event.issue.number }}" --repo "${{ github.repository }}" --add-label "rejected"
 
       - name: Open approval PR against classroom-roster
         if: steps.reg.outputs.status == 'ok'
         env:
           GH_TOKEN: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
+          REG_USERNAME: ${{ steps.reg.outputs.username }}
+          REG_TEAMMATE: ${{ steps.reg.outputs.teammate }}
+          REG_TEAM_NAME: ${{ steps.reg.outputs.team_name }}
+          REG_TEAM_SLUG: ${{ steps.reg.outputs.team_slug }}
+          REG_MESSAGE: ${{ steps.reg.outputs.message }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_REPO_FULL: ${{ github.repository }}
         run: |
           cd roster-checkout
-          BRANCH="register/issue-${{ github.event.issue.number }}-${{ steps.reg.outputs.username }}"
+          BRANCH="register/issue-${ISSUE_NUMBER}-${REG_USERNAME}"
           git config user.name "classroom-bot"
           git config user.email "classroom-bot@users.noreply.github.com"
           git checkout -B "$BRANCH"
           git add "${ROSTER_FILE}"
-          git commit -m "Register ${{ steps.reg.outputs.username }} -> ${{ steps.reg.outputs.team_name }}"
+          git commit -m "Register ${REG_USERNAME} -> ${REG_TEAM_NAME}"
           git push -f origin "$BRANCH"
 
           # Structured metadata block the roster-side workflow parses
           # back out once this PR is merged/closed.
           BODY=$(cat <<EOF
-          Solicitud de inscripción de @${{ steps.reg.outputs.username }}
-          para el equipo **${{ steps.reg.outputs.team_name }}**.
+          Solicitud de inscripción de @${REG_USERNAME}
+          para el equipo **${REG_TEAM_NAME}**.
 
-          ${{ steps.reg.outputs.message }}
+          ${REG_MESSAGE}
 
           <!-- registration-meta
-          username: ${{ steps.reg.outputs.username }}
-          teammate: "${{ steps.reg.outputs.teammate }}"
-          team_name: "${{ steps.reg.outputs.team_name }}"
-          team_slug: ${{ steps.reg.outputs.team_slug }}
-          issue_repo: ${{ github.repository }}
-          issue_number: ${{ github.event.issue.number }}
+          username: ${REG_USERNAME}
+          teammate: "${REG_TEAMMATE}"
+          team_name: "${REG_TEAM_NAME}"
+          team_slug: ${REG_TEAM_SLUG}
+          issue_repo: ${ISSUE_REPO_FULL}
+          issue_number: ${ISSUE_NUMBER}
           -->
           EOF
           )
@@ -94,13 +120,6 @@ jobs:
             gh pr create --repo "${ROSTER_REPO}" \
               --base main \
               --head "$BRANCH" \
-              --title "Registro: ${{ steps.reg.outputs.team_name }} (${{ steps.reg.outputs.username }})" \
+              --title "Registro: ${REG_TEAM_NAME} (${REG_USERNAME})" \
               --body "$BODY"
           fi
-
-      - name: Tell the student it's pending approval
-        if: steps.reg.outputs.status == 'ok'
-        env:
-          GH_TOKEN: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
-        run: |
-          gh issue comment "${{ github.event.issue.number }}" --body "✅ Solicitud válida — ${{ steps.reg.outputs.message }} Un administrador debe aprobarla antes de que se los agregue a la organización; este issue se actualizará automáticamente cuando eso ocurra."

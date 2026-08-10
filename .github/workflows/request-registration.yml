@@ -3,8 +3,8 @@ name: Request registration
 # This repo is PUBLIC (so students can file issues without org access).
 # It never writes to the roster or touches org membership directly —
 # it only proposes a change as a pull request against the private
-# classroom-roster repo. An admin reviewing/merging that PR is what
-# actually grants anything (see classroom-roster's
+# isw2-listado-alumnos repo. An admin reviewing/merging that PR is
+# what actually grants anything (see isw2-listado-alumnos's
 # on-registration-approved.yml).
 
 on:
@@ -12,8 +12,9 @@ on:
     types: [opened, edited, reopened]
 
 env:
-  ORG: ${{ github.repository_owner }}
-  ROSTER_REPO: OWNER_ORG/classroom-roster   # <-- set this to your org/repo
+  ORG: ingesoft2-dc-uba-ar
+  ROSTER_REPO: ingesoft2-dc-uba-ar/isw2-listado-alumnos
+  ROSTER_FILE: 2026-2c.yaml   # <-- bump this each cohort (e.g. 2027-1c.yaml)
 
 jobs:
   request:
@@ -27,7 +28,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: ${{ env.ROSTER_REPO }}
-          token: ${{ secrets.ORG_ADMIN_TOKEN }}
+          token: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
           path: roster-checkout
 
       - uses: actions/setup-python@v5
@@ -41,13 +42,13 @@ jobs:
         env:
           ISSUE_BODY: ${{ github.event.issue.body }}
           ISSUE_AUTHOR: ${{ github.event.issue.user.login }}
-          ROSTER_PATH: roster-checkout/roster.yaml
+          ROSTER_PATH: roster-checkout/${{ env.ROSTER_FILE }}
         run: python3 roster-checkout/scripts/register.py
 
       - name: Reject (syntactically invalid or breaks a rule)
         if: steps.reg.outputs.status == 'error'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
         run: |
           gh issue comment "${{ github.event.issue.number }}" --body "❌ ${{ steps.reg.outputs.message }}"
           gh issue close "${{ github.event.issue.number }}" --reason "not planned"
@@ -56,14 +57,14 @@ jobs:
       - name: Open approval PR against classroom-roster
         if: steps.reg.outputs.status == 'ok'
         env:
-          GH_TOKEN: ${{ secrets.ORG_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
         run: |
           cd roster-checkout
           BRANCH="register/issue-${{ github.event.issue.number }}-${{ steps.reg.outputs.username }}"
           git config user.name "classroom-bot"
           git config user.email "classroom-bot@users.noreply.github.com"
           git checkout -B "$BRANCH"
-          git add roster.yaml
+          git add "${ROSTER_FILE}"
           git commit -m "Register ${{ steps.reg.outputs.username }} -> ${{ steps.reg.outputs.team_name }}"
           git push -f origin "$BRANCH"
 
@@ -100,6 +101,6 @@ jobs:
       - name: Tell the student it's pending approval
         if: steps.reg.outputs.status == 'ok'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.REGISTRATION_FORKER_TOKEN }}
         run: |
           gh issue comment "${{ github.event.issue.number }}" --body "✅ Solicitud válida — ${{ steps.reg.outputs.message }} Un administrador debe aprobarla antes de que se los agregue a la organización; este issue se actualizará automáticamente cuando eso ocurra."
